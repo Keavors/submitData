@@ -58,6 +58,21 @@ class SubmitDataRequest(BaseModel):
         populate_by_name = True
         json_encoders = {datetime: lambda dt: dt.isoformat(timespec='seconds')}  # Уточняем формат ISO
 
+class UpdatePerevalRequest(BaseModel):
+    beauty_title: Optional[str] = Field(None, alias="beautyTitle")
+    title: Optional[str] = None
+    other_titles: Optional[str] = None
+    connect: Optional[str] = None
+    add_time: Optional[datetime] = None
+    # user: User # Исключаем user, так как его нельзя менять
+    coords: Optional[Coords] = None
+    level: Optional[Level] = None
+    images: Optional[List[Image]] = None
+
+    class Config:
+        populate_by_name = True
+        json_encoders = {datetime: lambda dt: dt.isoformat(timespec='seconds')}
+
 
 # --- Инициализация менеджера базы данных ---
 db_manager = DatabaseManager()
@@ -138,8 +153,8 @@ async def get_pereval_by_id(pereval_id: int):
                             detail=f"Перевал с ID {pereval_id} не найден.")
 
 
-@app.patch("/submitData/{pereval_id}", summary="Отредактировать данные о перевале", response_model=dict)
-async def update_pereval_data(pereval_id: int, request_data: SubmitDataRequest):
+@app.patch("/submitData/{pereval_id}", summary="Отредактировать данные о перевале")
+async def update_pereval_data(pereval_id: int, request_data: UpdatePerevalRequest): # Изменено на UpdatePerevalRequest
     """
     Редактирует существующую запись о перевале по ее ID,
     только если она находится в статусе 'new'.
@@ -149,11 +164,11 @@ async def update_pereval_data(pereval_id: int, request_data: SubmitDataRequest):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail="Ошибка подключения к базе данных")
 
-    data_to_update = request_data.model_dump(mode='json', by_alias=True, exclude_none=True)
-
-
-    # add_time если присутствует в new_data, будет datetime.
-    # db_manager.update_pereval уже обрабатывает его преобразование в ISO.
+    # Если вы хотите передать только измененные поля в db_manager.update_pereval,
+    # используйте request_data.dict(by_alias=True, exclude_unset=True)
+    # exclude_unset=True означает, что будут включены только те поля,
+    # которые были явно предоставлены в запросе, а не None значения.
+    data_to_update = request_data.dict(by_alias=True, exclude_unset=True)
 
     state, message = db_manager.update_pereval(pereval_id, data_to_update)
 
@@ -163,7 +178,6 @@ async def update_pereval_data(pereval_id: int, request_data: SubmitDataRequest):
             "message": message
         }
     else:
-        # Согласно заданию, возвращаем 200 OK, но с state=0 для ошибки
         return {
             "state": 0,
             "message": message
