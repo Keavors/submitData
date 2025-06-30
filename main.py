@@ -1,11 +1,10 @@
-# -*- coding: utf-8 -*-
-import json
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List, Union # Union используется, но в текущем коде Optional более специфичен
+from typing import Optional, List, Union
 from datetime import datetime
 import uvicorn
 import os
+import json  # Добавлен импорт json
 
 from db_manager import DatabaseManager
 
@@ -14,6 +13,9 @@ app = FastAPI(
     description="API для отправки данных о горных перевалах в ФСТР",
     version="1.0.0"
 )
+
+# Инициализируем менеджер базы данных
+db_manager = DatabaseManager()
 
 
 # --- Определяем модели данных для валидации входящих запросов ---
@@ -49,169 +51,257 @@ class SubmitDataRequest(BaseModel):
     other_titles: Optional[str] = None
     connect: Optional[str] = None
     # add_time здесь делаем Optional, так как это поле чаще всего устанавливается на сервере
-    # а если приходит, то Pydantic попытается его распарсить.
-    add_time: Optional[datetime] = None
+    # а если приходит, то Pydantic его провалидирует
+    add_time: Optional[str] = None
     user: User
     coords: Coords
     level: Level
-    images: List[Image] = []
-
-    class Config:
-        populate_by_name = True
-        json_encoders = {datetime: lambda dt: dt.isoformat(timespec='seconds')} # Уточняем формат ISO
-
-class UpdatePerevalRequest(BaseModel):
-    # Все поля Optional, так как PATCH может обновлять только часть полей.
-    # user поле исключено, так как его изменение не допускается.
-    beauty_title: Optional[str] = Field(None, alias="beautyTitle")
-    title: Optional[str] = None
-    other_titles: Optional[str] = None
-    connect: Optional[str] = None
-    add_time: Optional[datetime] = None # Хотя add_time обычно не меняется, делаем Optional
-    coords: Optional[Coords] = None
-    level: Optional[Level] = None
-    images: Optional[List[Image]] = None
-
-    class Config:
-        populate_by_name = True
-        json_encoders = {datetime: lambda dt: dt.isoformat(timespec='seconds')}
+    images: List[Image] = []  # По умолчанию пустой список изображений
 
 
-# --- Инициализация менеджера базы данных ---
-db_manager = DatabaseManager()
+# --- Эндпоинты API ---
 
-
-# --- Определение маршрутов API ---
-
-@app.post("/submitData", summary="Отправить данные о новом перевале", response_model=dict)
-async def submit_data(request_data: SubmitDataRequest):
+@app.post("/submitData")
+async def submit_data(data: SubmitDataRequest):
     """
-    Принимает данные о новом перевале от мобильного приложения,
-    сохраняет их в базу данных и возвращает статус операции.
+    Добавление новой записи о перевале.
     """
-    # Подключаемся к базе данных
-    if not db_manager.connect():
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail="Ошибка подключения к базе данных")
-
     try:
-        # ИСХОДНО: data_to_save = request_data.dict(by_alias=True, exclude_none=True)
-        # ИСПРАВЛЕНИЕ: Используем model_dump с mode='json' для правильной сериализации datetime
-        data_to_save = request_data.model_dump(mode='json', by_alias=True, exclude_none=True)
+        # Пытаемся подключиться к БД, если соединение неактивно
+        if not db_manager.connection or db_manager.connection.closed:
+            db_manager.connect()
 
-        new_pereval_id = db_manager.add_pereval(data_to_save)
+        # Преобразуем RequestModel в словарь, подходящий для сохранения в raw_data
+        # Используем dict(by_alias=True) для корректного преобразования beautyTitle
+        submit_data_dict = data.model_dump(by_alias=True)
 
-        if new_pereval_id is None:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                                detail="Ошибка при добавлении записи в базу данных")
+        # Удаляем add_time из submit_data_dict, если оно не было передано,
+        # или используем его, если передано. db_manager.add_pereval
+        # обрабатывает его самостоятельно, если None.
+        add_time_str = submit_data_dict.get('add_time')
+        if add_time_str:
+            # Если add_time пришло, убедимся, что оно корректно,
+            # но его обработка на стороне БД должна быть надежной.
+            # Для сохранения в raw_data мы можем оставить его как есть.
+            pass
+        else:
+            # Если add_time не передано, его не будет в raw_data,
+            # и БД установит CURRENT_TIMESTAMP.
+            submit_data_dict.pop('add_time', None)
 
-        return {
-            "status": status.HTTP_200_OK,
-            "message": "Отправлено успешно",
-            "id": new_pereval_id
-        }
+        # Отделяем изображения для сохранения в отдельном JSONB поле 'images'
+        images_data = submit_data_dict.pop('images', [])
 
-    except HTTPException as e:
-        raise e
+        # Передаем данные в db_manager.add_pereval
+        # Теперь db_manager.add_pereval должен принимать submit_data_dict (для raw_data) и images_data
+        # В db_manager.add_pereval, images_data будет dumps'иться в JSON.
+        pereval_id = db_manager.add_pereval(submit_data_dict, images_data)
+
+        if pereval_id:
+            return {"state": 1, "message": "Запись успешно добавлена.", "id": pereval_id}
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"state": 0, "message": "Не удалось добавить запись."}
+            )
+
     except Exception as e:
-        print(f"Неизвестная ошибка в submit_data: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Внутренняя ошибка сервера: {e}")
+        # Проверяем, если ошибка связана с уникальностью email
+        # Это очень базовая проверка, для продакшена лучше использовать более конкретные исключения psycopg2
+        if "duplicate key value violates unique constraint" in str(e).lower() and "user_email_unique" in str(e).lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"state": 0, "message": "Пользователь с таким email уже существует."}
+            )
+        print(f"Ошибка при обработке submitData: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"state": 0, "message": "Что-то пошло не так на сервере."}
+        )
+    finally:
+        # Опционально: можно закрывать соединение после каждой операции,
+        # но для повышения производительности лучше использовать пул соединений.
+        # Для простоты текущей реализации оставим как есть, но учитывайте это.
+        # db_manager.disconnect()
+        pass
 
 
 @app.get("/submitData/{pereval_id}")
 async def get_pereval_by_id(pereval_id: int):
-    pereval_data = db_manager.get_pereval_by_id(pereval_id)
-    if pereval_data:
-        if 'raw_data' in pereval_data and pereval_data['raw_data']:
-            response_data = pereval_data['raw_data']
-            response_data['id'] = pereval_data['id']
-
-            images_from_db = pereval_data.get('images', [])
-            formatted_images = []
-            if images_from_db:
-                try:
-                    if isinstance(images_from_db, str):
-                        images_from_db = json.loads(images_from_db)
-                    if isinstance(images_from_db, list):
-                        for img in images_from_db:
-                            if isinstance(img, dict) and 'data' in img and 'title' in img:
-                                formatted_images.append({'data': img['data'], 'title': img['title']})
-                except json.JSONDecodeError:
-                    print(f"Ошибка декодирования JSON для изображений ID {pereval_id}")
-                    formatted_images = []
-
-            response_data['images'] = formatted_images
-
-            # Эта строка была удалена: del response_data['images_json']
-
-            return response_data
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Перевал не найден.")
-
-
-@app.patch("/submitData/{pereval_id}", summary="Отредактировать данные о перевале")
-async def update_pereval_data(pereval_id: int, request_data: UpdatePerevalRequest):
     """
-    Редактирует существующую запись о перевале по ее ID,
-    только если она находится в статусе 'new'.
-    Редактировать можно все поля, кроме ФИО, адреса почты и номера телефона.
+    Получение информации о перевале по его ID.
     """
-    if not db_manager.connect():
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail="Ошибка подключения к базе данных")
+    try:
+        if not db_manager.connection or db_manager.connection.closed:
+            db_manager.connect()
 
-    # Если вы хотите передать только измененные поля в db_manager.update_pereval,
-    # используйте request_data.model_dump(by_alias=True, exclude_unset=True)
-    # exclude_unset=True означает, что будут включены только те поля,
-    # которые были явно предоставлены в запросе, а не None значения.
-    data_to_update = request_data.model_dump(mode='json', by_alias=True, exclude_unset=True)
+        pereval_data = db_manager.get_pereval_by_id(pereval_id)
 
+        if pereval_data:
+            # Логирование для отладки:
+            # print(f"get_pereval_by_id: Retrieved data for ID {pereval_id}: {pereval_data}")
 
-    state, message = db_manager.update_pereval(pereval_id, data_to_update)
+            if 'raw_data' in pereval_data and pereval_data['raw_data']:
+                response_data = pereval_data['raw_data']
+                response_data['id'] = pereval_data['id']
 
-    if state == 1:
-        return {
-            "state": 1,
-            "message": message
-        }
-    else:
-        return {
-            "state": 0,
-            "message": message
-        }
+                # Добавляем date_added и status в ответ
+                response_data['date_added'] = pereval_data.get('date_added')
+                response_data['status'] = pereval_data.get('status')
 
+                images_from_db = pereval_data.get('images', [])
+                formatted_images = []
+                if images_from_db:
+                    try:
+                        # Если images_from_db пришло как строка JSON из базы, нужно ее распарсить
+                        if isinstance(images_from_db, str):
+                            images_from_db = json.loads(images_from_db)
+                        if isinstance(images_from_db, list):
+                            for img in images_from_db:
+                                if isinstance(img, dict) and 'data' in img and 'title' in img:
+                                    formatted_images.append({'data': img['data'], 'title': img['title']})
+                    except json.JSONDecodeError:
+                        print(f"Ошибка декодирования JSON для изображений ID {pereval_id}")
+                        formatted_images = []
 
-@app.get("/submitData/", summary="Получить все перевалы пользователя по Email", response_model=dict)
-async def get_perevals_by_user_email(user__email: EmailStr):
-    """
-    Возвращает список всех объектов перевала, отправленных пользователем с указанным email,
-    а также их статусы.
-    """
-    if not db_manager.connect():
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail="Ошибка подключения к базе данных")
+                response_data['images'] = formatted_images
 
-    perevals_list = db_manager.get_perevals_by_email(user__email)
+                # !!! ЭТА СТРОКА БЫЛА ИСТОЧНИКОМ ОШИБКИ И УДАЛЕНА !!!
+                # del response_data['images_json'] # <-- УДАЛЕНО
 
-    if perevals_list is not None:
-        # Для каждого перевала в списке, изменим структуру, чтобы она выглядела
-        # ближе к исходному запросу (без images_json, а просто images)
-        formatted_list = []
-        for pereval_info in perevals_list:
-            response_data = pereval_info.copy()
-            if 'images_json' in response_data and isinstance(response_data['images_json'], dict):
-                response_data['images'] = response_data['images_json'].get('images', [])
+                return response_data
             else:
-                response_data['images'] = []
-            del response_data['images_json']
-            formatted_list.append(response_data)
+                # Если raw_data отсутствует или пусто
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Данные перевала неполные.")
+        else:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Перевал не найден.")
 
-        return {
-            "status": status.HTTP_200_OK,
-            "message": "Успешно получено",
-            "data": formatted_list
-        }
-    else:
+    except HTTPException:  # Пробрасываем HTTPException без изменений
+        raise
+    except Exception as e:
+        print(f"Ошибка при обработке get_pereval_by_id: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Внутренняя ошибка сервера при получении данных о перевале."
+        )
+
+
+@app.patch("/submitData/{pereval_id}")
+async def patch_pereval(pereval_id: int, update_data: SubmitDataRequest):
+    """
+    Редактирование данных о перевале по его ID.
+    Разрешено редактировать только записи со статусом 'new'.
+    Пользовательские данные (user) редактировать нельзя.
+    """
+    try:
+        if not db_manager.connection or db_manager.connection.closed:
+            db_manager.connect()
+
+        # Получаем текущие данные перевала для проверки статуса
+        current_pereval_data = db_manager.get_pereval_by_id(pereval_id)
+
+        if not current_pereval_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"state": 0, "message": "Перевал не найден."}
+            )
+
+        # Проверка статуса
+        if current_pereval_data.get('status') != 'new':
+            # Если статус не "new", возвращаем ошибку, как в ваших тестах.
+            # Для PATCH запроса, который не позволяет изменение, 200 OK с сообщением об ошибке приемлем.
+            # Если бы это был более строгий API, можно было бы вернуть 403 Forbidden.
+            return {
+                "state": 0,
+                "message": f"Редактирование запрещено. Статус перевала: '{current_pereval_data.get('status', 'неизвестно')}'. Разрешено только для 'new'."
+            }
+
+        # Преобразуем RequestModel в словарь
+        update_data_dict = update_data.model_dump(by_alias=True,
+                                                  exclude_unset=True)  # exclude_unset=True для частичного обновления
+
+        # Проверяем, пытаются ли изменить пользовательские данные
+        if 'user' in update_data_dict:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"state": 0, "message": "Изменение пользовательских данных запрещено."}
+            )
+
+        # Отделяем изображения, если они есть в update_data
+        images_to_update = update_data_dict.pop('images', None)
+
+        # Вызываем метод обновления в db_manager
+        # db_manager.update_pereval должен обновлять только те поля, что переданы
+        success = db_manager.update_pereval(pereval_id, update_data_dict, images_to_update)
+
+        if success:
+            return {"state": 1, "message": "Запись успешно обновлена."}
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={"state": 0, "message": "Не удалось обновить запись."}
+            )
+
+    except HTTPException:  # Пробрасываем HTTPException без изменений
+        raise
+    except Exception as e:
+        print(f"Ошибка при обработке patch_pereval: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"state": 0, "message": "Внутренняя ошибка сервера при обновлении перевала."}
+        )
+
+
+@app.get("/submitData")
+async def get_perevals_by_email(user__email: EmailStr):
+    """
+    Получение списка перевалов, отправленных пользователем, по его email.
+    """
+    try:
+        if not db_manager.connection or db_manager.connection.closed:
+            db_manager.connect()
+
+        perevals_data = db_manager.get_perevals_by_email(user__email)
+
+        if perevals_data is not None:  # Проверяем на None, так как get_perevals_by_email может вернуть пустой список
+            formatted_list = []
+            for pereval in perevals_data:
+                # Преобразуем raw_data и images обратно в словари/списки
+                formatted_pereval = pereval['raw_data']
+                formatted_pereval['id'] = pereval['id']
+                formatted_pereval['date_added'] = pereval['date_added']  # Добавляем date_added
+                formatted_pereval['status'] = pereval['status']  # Добавляем status
+
+                images_from_db = pereval.get('images', [])
+                processed_images = []
+                if images_from_db:
+                    try:
+                        if isinstance(images_from_db, str):
+                            images_from_db = json.loads(images_from_db)
+                        if isinstance(images_from_db, list):
+                            for img in images_from_db:
+                                if isinstance(img, dict) and 'data' in img and 'title' in img:
+                                    processed_images.append({'data': img['data'], 'title': img['title']})
+                    except json.JSONDecodeError:
+                        print(f"Ошибка декодирования JSON для изображений при получении по email.")
+                        processed_images = []
+                formatted_pereval['images'] = processed_images
+                formatted_list.append(formatted_pereval)
+
+            return {
+                "status": status.HTTP_200_OK,
+                "message": "Успешно получено",
+                "data": formatted_list
+            }
+        else:
+            # Если db_manager.get_perevals_by_email вернул None (хотя он должен возвращать список)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail="Ошибка при получении данных о перевалах.")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Ошибка при обработке get_perevals_by_email: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail="Ошибка при получении данных о перевалах.")
 
@@ -230,8 +320,8 @@ if __name__ == "__main__":
     # Это полезно для быстрой диагностики проблем с БД при запуске API.
     # Если подключение не удастся, Uvicorn не будет запущен.
     if not db_manager.connect():
-        print("Критическая ошибка: Не удалось установить начальное соединение с базой данных. Проверьте настройки БД.")
-    else:
-        db_manager.disconnect()  # Закроем начальное соединение, Uvicorn откроет свои.
-        print("Начальная проверка подключения к БД успешна. Запускаю API...")
-        uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+        print(
+            "Критическая ошибка: Не удалось установить начальное соединение с базой данных. Проверьте переменные окружения и доступность БД.")
+        exit(1)  # Завершаем выполнение, если нет подключения к БД
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)
