@@ -50,13 +50,27 @@ class SubmitDataRequest(BaseModel):
     title: str
     other_titles: Optional[str] = None
     connect: Optional[str] = None
-    # add_time здесь делаем Optional, так как это поле чаще всего устанавливается на сервере
-    # а если приходит, то Pydantic его провалидирует
     add_time: Optional[str] = None
-    user: User
-    coords: Coords
-    level: Level
+    user: User  # Обязательное поле для POST
+    coords: Coords  # Обязательное поле для POST
+    level: Level  # Обязательное поле для POST
     images: List[Image] = []  # По умолчанию пустой список изображений
+
+
+# НОВАЯ МОДЕЛЬ ДЛЯ PATCH-ЗАПРОСОВ
+# Все поля, которые могут быть обновлены, делаем Optional.
+# Поле user полностью удаляем или делаем Optional[User]
+# и явно обрабатываем его запрет в эндпоинте.
+class PatchDataRequest(BaseModel):
+    beauty_title: Optional[str] = Field(None, alias="beautyTitle")
+    title: Optional[str] = None
+    other_titles: Optional[str] = None
+    connect: Optional[str] = None
+    add_time: Optional[str] = None  # add_time обычно не обновляется, но для гибкости оставим Optional
+    user: Optional[User] = None  # Делаем Optional, но все равно запретим изменение в логике
+    coords: Optional[Coords] = None
+    level: Optional[Level] = None
+    images: Optional[List[Image]] = None  # Optional для всего списка изображений
 
 
 # --- Эндпоинты API ---
@@ -67,23 +81,11 @@ async def submit_data(data: SubmitDataRequest):
     Добавление новой записи о перевале.
     """
     try:
-        # Пытаемся подключиться к БД, если соединение неактивно
         if not db_manager.connection or db_manager.connection.closed:
             db_manager.connect()
 
-        # Преобразуем RequestModel в словарь, подходящий для сохранения в raw_data
-        # Используем dict(by_alias=True) для корректного преобразования beautyTitle
         submit_data_dict = data.model_dump(by_alias=True)
 
-        # add_time будет частью submit_data_dict, если оно было передано,
-        # и это нормально, так как db_manager его обработает.
-        # Если не было передано, оно будет отсутствовать, и БД поставит CURRENT_TIMESTAMP.
-
-        # В вашем db_manager.add_pereval, images уже находится внутри `data`,
-        # поэтому нет необходимости извлекать его отдельно здесь.
-        # db_manager.add_pereval должен сам доставать images из общего словаря `data`.
-
-        # Передаем весь submit_data_dict в db_manager.add_pereval
         pereval_id = db_manager.add_pereval(submit_data_dict)
 
         if pereval_id:
@@ -95,8 +97,6 @@ async def submit_data(data: SubmitDataRequest):
             )
 
     except Exception as e:
-        # Проверяем, если ошибка связана с уникальностью email
-        # Это очень базовая проверка, для продакшена лучше использовать более конкретные исключения psycopg2
         if "duplicate key value violates unique constraint" in str(e).lower() and "user_email_unique" in str(e).lower():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -163,7 +163,7 @@ async def get_pereval_by_id(pereval_id: int):
 
 
 @app.patch("/submitData/{pereval_id}")
-async def patch_pereval(pereval_id: int, update_data: SubmitDataRequest):
+async def patch_pereval(pereval_id: int, update_data: PatchDataRequest):  # ИСПОЛЬЗУЕМ НОВУЮ МОДЕЛЬ!
     """
     Редактирование данных о перевале по его ID.
     Разрешено редактировать только записи со статусом 'new'.
@@ -195,8 +195,6 @@ async def patch_pereval(pereval_id: int, update_data: SubmitDataRequest):
                 detail={"state": 0, "message": "Изменение пользовательских данных запрещено."}
             )
 
-        # Передаем весь update_data_dict для обновления raw_data и images
-        # db_manager.update_pereval должен извлекать images из этого словаря
         success = db_manager.update_pereval(pereval_id, update_data_dict)
 
         if success:
