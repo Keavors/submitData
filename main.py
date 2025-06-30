@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List, Union  # Добавил Union для типов возврата, хотя or None тоже работает
+from typing import Optional, List, Union
 from datetime import datetime
 import uvicorn
 import os
@@ -65,7 +65,7 @@ db_manager = DatabaseManager()
 
 # --- Определение маршрутов API ---
 
-@app.post("/submitData", summary="Отправить данные о новом перевале")
+@app.post("/submitData", summary="Отправить данные о новом перевале", response_model=dict)
 async def submit_data(request_data: SubmitDataRequest):
     """
     Принимает данные о новом перевале от мобильного приложения,
@@ -77,10 +77,9 @@ async def submit_data(request_data: SubmitDataRequest):
                             detail="Ошибка подключения к базе данных")
 
     try:
-        data_to_save = request_data.dict(by_alias=True, exclude_none=True)
-
-        # add_time уже будет datetime объект, db_manager преобразует его в нужный формат при сохранении
-        # db_manager.add_pereval() сам справится с датой.
+        # ИСХОДНО: data_to_save = request_data.dict(by_alias=True, exclude_none=True)
+        # ИСПРАВЛЕНИЕ: Используем model_dump с mode='json' для правильной сериализации datetime
+        data_to_save = request_data.model_dump(mode='json', by_alias=True, exclude_none=True)
 
         new_pereval_id = db_manager.add_pereval(data_to_save)
 
@@ -102,7 +101,7 @@ async def submit_data(request_data: SubmitDataRequest):
                             detail=f"Внутренняя ошибка сервера: {e}")
 
 
-@app.get("/submitData/{pereval_id}", summary="Получить данные о перевале по ID")
+@app.get("/submitData/{pereval_id}", summary="Получить данные о перевале по ID", response_model=dict)
 async def get_pereval_by_id(pereval_id: int):
     """
     Возвращает полную информацию об объекте перевала по его ID, включая статус модерации.
@@ -139,7 +138,7 @@ async def get_pereval_by_id(pereval_id: int):
                             detail=f"Перевал с ID {pereval_id} не найден.")
 
 
-@app.patch("/submitData/{pereval_id}", summary="Отредактировать данные о перевале")
+@app.patch("/submitData/{pereval_id}", summary="Отредактировать данные о перевале", response_model=dict)
 async def update_pereval_data(pereval_id: int, request_data: SubmitDataRequest):
     """
     Редактирует существующую запись о перевале по ее ID,
@@ -150,7 +149,8 @@ async def update_pereval_data(pereval_id: int, request_data: SubmitDataRequest):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail="Ошибка подключения к базе данных")
 
-    data_to_update = request_data.dict(by_alias=True, exclude_none=True)
+    data_to_update = request_data.model_dump(mode='json', by_alias=True, exclude_none=True)
+
 
     # add_time если присутствует в new_data, будет datetime.
     # db_manager.update_pereval уже обрабатывает его преобразование в ISO.
@@ -170,7 +170,7 @@ async def update_pereval_data(pereval_id: int, request_data: SubmitDataRequest):
         }
 
 
-@app.get("/submitData/", summary="Получить все перевалы пользователя по Email")
+@app.get("/submitData/", summary="Получить все перевалы пользователя по Email", response_model=dict)
 async def get_perevals_by_user_email(user__email: EmailStr):
     """
     Возвращает список всех объектов перевала, отправленных пользователем с указанным email,
