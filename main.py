@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import json
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List, Union # Union используется, но в текущем коде Optional более специфичен
@@ -118,42 +119,34 @@ async def submit_data(request_data: SubmitDataRequest):
                             detail=f"Внутренняя ошибка сервера: {e}")
 
 
-@app.get("/submitData/{pereval_id}", summary="Получить данные о перевале по ID", response_model=dict)
+@app.get("/submitData/{pereval_id}")
 async def get_pereval_by_id(pereval_id: int):
-    """
-    Возвращает полную информацию об объекте перевала по его ID, включая статус модерации.
-    """
-    if not db_manager.connect():
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail="Ошибка подключения к базе данных")
+    pereval_data = db_manager.get_pereval_by_id(pereval_id)
+    if pereval_data:
+        if 'raw_data' in pereval_data and pereval_data['raw_data']:
+            response_data = pereval_data['raw_data']
+            response_data['id'] = pereval_data['id']
 
-    pereval_info = db_manager.get_pereval_by_id(pereval_id)
+            images_from_db = pereval_data.get('images', [])
+            formatted_images = []
+            if images_from_db:
+                try:
+                    if isinstance(images_from_db, str):
+                        images_from_db = json.loads(images_from_db)
+                    if isinstance(images_from_db, list):
+                        for img in images_from_db:
+                            if isinstance(img, dict) and 'data' in img and 'title' in img:
+                                formatted_images.append({'data': img['data'], 'title': img['title']})
+                except json.JSONDecodeError:
+                    print(f"Ошибка декодирования JSON для изображений ID {pereval_id}")
+                    formatted_images = []
 
-    if pereval_info:
-        # raw_data и images_json уже являются объектами Python (словарями),
-        # поэтому FastAPI автоматически преобразует их в JSON.
-        # Можем их вернуть как есть или преобразовать структуру, чтобы она выглядела
-        # ближе к исходному запросу (без images_json, а просто images).
-        # Давайте сделаем, чтобы images_json было просто images и содержимое его словаря "images"
+            response_data['images'] = formatted_images
 
-        # Создаем копию для изменения перед возвратом
-        response_data = pereval_info.copy()
-        # Извлекаем список картинок из 'images_json'
-        # Проверяем, что images_json существует и является словарем
-        if 'images_json' in response_data and isinstance(response_data['images_json'], dict):
-            response_data['images'] = response_data['images_json'].get('images', [])
-        else:
-            response_data['images'] = []  # Если нет или неверный формат, то пустой список
-        del response_data['images_json']  # Удаляем оригинальное поле
+            # Эта строка была удалена: del response_data['images_json']
 
-        return {
-            "status": status.HTTP_200_OK,
-            "message": "Успешно получено",
-            "data": response_data
-        }
-    else:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail=f"Перевал с ID {pereval_id} не найден.")
+            return response_data
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Перевал не найден.")
 
 
 @app.patch("/submitData/{pereval_id}", summary="Отредактировать данные о перевале")
