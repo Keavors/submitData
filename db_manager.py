@@ -283,16 +283,49 @@ class DatabaseManager:
         finally:
             pass  # Соединение не закрываем
 
+    # Добавьте этот метод внутрь класса DatabaseManager
+    def create_tables(self, schema_file_path: str) -> bool:
+        """
+        Создает таблицы в базе данных на основе SQL-схемы из файла.
+        """
+        if not self.connect():
+            print("Не удалось подключиться к базе данных для создания таблиц.")
+            return False
+
+        try:
+            with open(schema_file_path, 'r', encoding='utf-8') as f:
+                sql_commands = f.read()
+
+            # Разделяем команды по точке с запятой, чтобы выполнить их по очереди
+            # Filter out empty strings that might result from splitting
+            commands = [cmd.strip() for cmd in sql_commands.split(';') if cmd.strip()]
+
+            for command in commands:
+                if command:  # Убедимся, что команда не пустая
+                    self.cursor.execute(command)
+                    # print(f"Выполнена команда: {command[:50]}...") # Для отладки
+
+            print(f"Таблицы успешно созданы/проверены из {schema_file_path}")
+            return True
+        except FileNotFoundError:
+            print(f"Ошибка: Файл схемы '{schema_file_path}' не найден.")
+            return False
+        except Error as e:
+            print(f"Ошибка при создании таблиц в базе данных: {e}")
+            return False
+        finally:
+            self.disconnect()  # Закроем соединение после создания таблиц
+
 
 # Пример использования (для тестирования)
 if __name__ == "__main__":
-    # Убедитесь, что переменные окружения установлены в конфигурации запуска PyCharm!
-    # ИЛИ раскомментируйте и установите их здесь (ТОЛЬКО для тестирования):
-    # os.environ['FSTR_DB_HOST'] = 'localhost'
-    # os.environ['FSTR_DB_PORT'] = '5432'
-    # os.environ['FSTR_DB_NAME'] = 'pereval_app'
-    # os.environ['FSTR_DB_LOGIN'] = 'postgres'
-    # os.environ['FSTR_DB_PASS'] = 'admin123' # Замените на ваш реальный пароль!
+    # ВРЕМЕННЫЕ НАСТРОЙКИ ДЛЯ ПОДКЛЮЧЕНИЯ К ОБЛАЧНОЙ БД Render.com
+    #os.environ['FSTR_DB_HOST'] = 'dpg-d1h9is6mcj7s73dkt8hg-a.frankfurt-postgres.render.com'
+    #os.environ['FSTR_DB_PORT'] = '5432'
+    #os.environ['FSTR_DB_NAME'] = 'pereval_app_cloud'
+    #os.environ['FSTR_DB_LOGIN'] = 'pereval_user'
+    #os.environ['FSTR_DB_PASS'] = 'QepWOEDcHDlB5ocRqTdxR6FOx6vTfN1P'
+
 
     # --- Тестирование add_pereval ---
     # Переинициализируем менеджер базы данных для каждого тестового блока
