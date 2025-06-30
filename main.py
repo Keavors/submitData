@@ -1,6 +1,7 @@
+# -*- coding: utf-8 -*-
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List, Union
+from typing import Optional, List, Union # Union используется, но в текущем коде Optional более специфичен
 from datetime import datetime
 import uvicorn
 import os
@@ -56,15 +57,16 @@ class SubmitDataRequest(BaseModel):
 
     class Config:
         populate_by_name = True
-        json_encoders = {datetime: lambda dt: dt.isoformat(timespec='seconds')}  # Уточняем формат ISO
+        json_encoders = {datetime: lambda dt: dt.isoformat(timespec='seconds')} # Уточняем формат ISO
 
 class UpdatePerevalRequest(BaseModel):
+    # Все поля Optional, так как PATCH может обновлять только часть полей.
+    # user поле исключено, так как его изменение не допускается.
     beauty_title: Optional[str] = Field(None, alias="beautyTitle")
     title: Optional[str] = None
     other_titles: Optional[str] = None
     connect: Optional[str] = None
-    add_time: Optional[datetime] = None
-    # user: User # Исключаем user, так как его нельзя менять
+    add_time: Optional[datetime] = None # Хотя add_time обычно не меняется, делаем Optional
     coords: Optional[Coords] = None
     level: Optional[Level] = None
     images: Optional[List[Image]] = None
@@ -137,6 +139,7 @@ async def get_pereval_by_id(pereval_id: int):
         # Создаем копию для изменения перед возвратом
         response_data = pereval_info.copy()
         # Извлекаем список картинок из 'images_json'
+        # Проверяем, что images_json существует и является словарем
         if 'images_json' in response_data and isinstance(response_data['images_json'], dict):
             response_data['images'] = response_data['images_json'].get('images', [])
         else:
@@ -154,7 +157,7 @@ async def get_pereval_by_id(pereval_id: int):
 
 
 @app.patch("/submitData/{pereval_id}", summary="Отредактировать данные о перевале")
-async def update_pereval_data(pereval_id: int, request_data: UpdatePerevalRequest): # Изменено на UpdatePerevalRequest
+async def update_pereval_data(pereval_id: int, request_data: UpdatePerevalRequest):
     """
     Редактирует существующую запись о перевале по ее ID,
     только если она находится в статусе 'new'.
@@ -165,10 +168,11 @@ async def update_pereval_data(pereval_id: int, request_data: UpdatePerevalReques
                             detail="Ошибка подключения к базе данных")
 
     # Если вы хотите передать только измененные поля в db_manager.update_pereval,
-    # используйте request_data.dict(by_alias=True, exclude_unset=True)
+    # используйте request_data.model_dump(by_alias=True, exclude_unset=True)
     # exclude_unset=True означает, что будут включены только те поля,
     # которые были явно предоставлены в запросе, а не None значения.
-    data_to_update = request_data.dict(by_alias=True, exclude_unset=True)
+    data_to_update = request_data.model_dump(mode='json', by_alias=True, exclude_unset=True)
+
 
     state, message = db_manager.update_pereval(pereval_id, data_to_update)
 
