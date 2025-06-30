@@ -1,84 +1,70 @@
-from fastapi import FastAPI, HTTPException, status  # Импортируем FastAPI и классы для обработки ошибок
-from pydantic import BaseModel, EmailStr, \
-    Field  # Импортируем BaseModel для определения структуры данных и EmailStr для валидации email
-from typing import Optional, List  # Импортируем Optional и List для указания типов данных
-from datetime import datetime  # Для работы с датами и временем
-import uvicorn  # Для запуска нашего API
-import os  # Для работы с переменными окружения
+from fastapi import FastAPI, HTTPException, status
+from pydantic import BaseModel, EmailStr, Field
+from typing import Optional, List, Union  # Добавил Union для типов возврата, хотя or None тоже работает
+from datetime import datetime
+import uvicorn
+import os
 
-# Импортируем наш класс DatabaseManager, который мы создали ранее
 from db_manager import DatabaseManager
 
-# Создаем экземпляр FastAPI
 app = FastAPI(
-    title="Pereval Online API",  # Название вашего API
-    description="API для отправки данных о горных перевалах в ФСТР",  # Описание API
-    version="1.0.0"  # Версия API
+    title="Pereval Online API",
+    description="API для отправки данных о горных перевалах в ФСТР",
+    version="1.0.0"
 )
 
 
 # --- Определяем модели данных для валидации входящих запросов ---
-# FastAPI использует Pydantic для автоматической валидации данных.
-# Это означает, что если входящий JSON не соответствует этой структуре,
-# FastAPI автоматически вернет ошибку 422 (Unprocessable Entity).
-
 class User(BaseModel):
-    # Модель для данных пользователя
-    email: EmailStr  # EmailStr проверяет, что это валидный email
-    fam: str  # Фамилия
-    name: str  # Имя
-    otc: Optional[str] = None  # Отчество (необязательное поле, по умолчанию None)
-    phone: str  # Телефон
+    email: EmailStr
+    fam: str
+    name: str
+    otc: Optional[str] = None
+    phone: str
 
 
 class Coords(BaseModel):
-    # Модель для координат перевала
-    latitude: str  # Широта (храним как строку, как в примере JSON)
-    longitude: str  # Долгота (храним как строку)
-    height: str  # Высота (храним как строку)
+    latitude: str
+    longitude: str
+    height: str
 
 
 class Level(BaseModel):
-    # Модель для категории трудности перевала
-    winter: Optional[str] = None  # Зима (необязательное поле)
-    summer: Optional[str] = None  # Лето (необязательное поле)
-    autumn: Optional[str] = None  # Осень (необязательное поле)
-    spring: Optional[str] = None  # Весна (необязательное поле)
+    winter: Optional[str] = None
+    summer: Optional[str] = None
+    autumn: Optional[str] = None
+    spring: Optional[str] = None
 
 
 class Image(BaseModel):
-    # Модель для информации об изображении
-    data: str  # Бинарные данные изображения (скорее всего, base64 строка)
-    title: str  # Название изображения
+    data: str
+    title: str
 
 
 class SubmitDataRequest(BaseModel):
-    # Главная модель для тела запроса POST submitData
-    beauty_title: str = Field(..., alias="beautyTitle")  # "beauty_title" в коде, но ожидаем "beautyTitle" в JSON
-    title: str  # Название перевала
-    other_titles: Optional[str] = None  # Другие названия (необязательно)
-    connect: Optional[str] = None  # Что соединяет (необязательно)
-    add_time: Optional[
-        datetime] = None  # Время добавления (необязательно, FastAPI автоматически преобразует строку в datetime)
-    user: User  # Данные пользователя, используем модель User
-    coords: Coords  # Координаты, используем модель Coords
-    level: Level  # Уровень сложности, используем модель Level
-    images: List[Image] = []  # Список изображений, используем модель Image, по умолчанию пустой список
+    beauty_title: str = Field(..., alias="beautyTitle")
+    title: str
+    other_titles: Optional[str] = None
+    connect: Optional[str] = None
+    # add_time здесь делаем Optional, так как это поле чаще всего устанавливается на сервере
+    # а если приходит, то Pydantic попытается его распарсить.
+    add_time: Optional[datetime] = None
+    user: User
+    coords: Coords
+    level: Level
+    images: List[Image] = []
 
-    # Конфигурация Pydantic, чтобы позволить полям в JSON быть camelCase
-    # и автоматически преобразовывать их в snake_case для Python
     class Config:
-        populate_by_name = True  # Позволяет использовать alias для полей
-        json_encoders = {datetime: lambda dt: dt.isoformat()}  # Для корректного преобразования datetime в JSON
+        populate_by_name = True
+        json_encoders = {datetime: lambda dt: dt.isoformat(timespec='seconds')}  # Уточняем формат ISO
 
 
 # --- Инициализация менеджера базы данных ---
 db_manager = DatabaseManager()
 
 
-# --- Определение маршрута API ---
+# --- Определение маршрутов API ---
 
-# Декоратор @app.post("/submitData") определяет, что это POST-запрос по пути "/submitData"
 @app.post("/submitData", summary="Отправить данные о новом перевале")
 async def submit_data(request_data: SubmitDataRequest):
     """
@@ -86,47 +72,22 @@ async def submit_data(request_data: SubmitDataRequest):
     сохраняет их в базу данных и возвращает статус операции.
     """
     # Подключаемся к базе данных
-    if not db_manager.connection:  # Если соединение ещё не установлено
-        if not db_manager.connect():  # Пытаемся подключиться
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                                detail="Ошибка подключения к базе данных")
+    if not db_manager.connect():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Ошибка подключения к базе данных")
 
     try:
-        # Pydantic уже проверил и распарсил request_data в Python-объект.
-        # Мы можем преобразовать его обратно в словарь, который наш db_manager ожидает.
-        # .dict() с exclude_unset=True не включает поля, которые не были предоставлены в запросе,
-        # но нам нужно всё, что пришло, поэтому без exclude_unset.
-        # Также, нам нужно убедиться, что 'beauty_title' преобразуется обратно в 'beautyTitle'
-        # для сохранения в 'raw_data' точно как в примере JSON запроса.
-
-        # Преобразуем объект Pydantic в обычный Python-словарь
-        # Мы используем dict(by_alias=True) чтобы получить имена полей как в исходном JSON
-        # (например, beautyTitle вместо beauty_title)
         data_to_save = request_data.dict(by_alias=True, exclude_none=True)
 
-        # Дополнительная обработка изображений, чтобы они соответствовали формату в примере JSON
-        # В примере запроса images - это список объектов с data и title.
-        # В нашей БД images - это JSON-поле, содержащее {"images": [...]}
-        # Пока мы просто сохраняем images_data как часть raw_data и также в отдельное поле images.
-        # В будущем, логика может быть сложнее для обработки бинарных данных.
+        # add_time уже будет datetime объект, db_manager преобразует его в нужный формат при сохранении
+        # db_manager.add_pereval() сам справится с датой.
 
-        # Если add_time есть, преобразуем его в строку ISO формата
-        if data_to_save.get('add_time'):
-            data_to_save['add_time'] = data_to_save['add_time'].isoformat(timespec='seconds')
-
-        # Извлекаем данные для сохранения в pereval_added
-        # raw_data будет весь JSON запрос, а images будет отдельным JSON с массивом картинок
-
-        # Метод add_pereval в db_manager ожидает весь входящий JSON как словарь.
-        # Он сам преобразует его в JSON для поля raw_data и images.
         new_pereval_id = db_manager.add_pereval(data_to_save)
 
         if new_pereval_id is None:
-            # Если db_manager.add_pereval вернул None, значит произошла ошибка в БД
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                                 detail="Ошибка при добавлении записи в базу данных")
 
-        # Возвращаем успешный ответ
         return {
             "status": status.HTTP_200_OK,
             "message": "Отправлено успешно",
@@ -134,30 +95,132 @@ async def submit_data(request_data: SubmitDataRequest):
         }
 
     except HTTPException as e:
-        # Перехватываем наши собственные HTTPException
         raise e
     except Exception as e:
-        # Перехватываем любые другие неожиданные ошибки
-        print(f"Неизвестная ошибка: {e}")
+        print(f"Неизвестная ошибка в submit_data: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Внутренняя ошибка сервера: {e}")
 
 
+@app.get("/submitData/{pereval_id}", summary="Получить данные о перевале по ID")
+async def get_pereval_by_id(pereval_id: int):
+    """
+    Возвращает полную информацию об объекте перевала по его ID, включая статус модерации.
+    """
+    if not db_manager.connect():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Ошибка подключения к базе данных")
+
+    pereval_info = db_manager.get_pereval_by_id(pereval_id)
+
+    if pereval_info:
+        # raw_data и images_json уже являются объектами Python (словарями),
+        # поэтому FastAPI автоматически преобразует их в JSON.
+        # Можем их вернуть как есть или преобразовать структуру, чтобы она выглядела
+        # ближе к исходному запросу (без images_json, а просто images).
+        # Давайте сделаем, чтобы images_json было просто images и содержимое его словаря "images"
+
+        # Создаем копию для изменения перед возвратом
+        response_data = pereval_info.copy()
+        # Извлекаем список картинок из 'images_json'
+        if 'images_json' in response_data and isinstance(response_data['images_json'], dict):
+            response_data['images'] = response_data['images_json'].get('images', [])
+        else:
+            response_data['images'] = []  # Если нет или неверный формат, то пустой список
+        del response_data['images_json']  # Удаляем оригинальное поле
+
+        return {
+            "status": status.HTTP_200_OK,
+            "message": "Успешно получено",
+            "data": response_data
+        }
+    else:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f"Перевал с ID {pereval_id} не найден.")
+
+
+@app.patch("/submitData/{pereval_id}", summary="Отредактировать данные о перевале")
+async def update_pereval_data(pereval_id: int, request_data: SubmitDataRequest):
+    """
+    Редактирует существующую запись о перевале по ее ID,
+    только если она находится в статусе 'new'.
+    Редактировать можно все поля, кроме ФИО, адреса почты и номера телефона.
+    """
+    if not db_manager.connect():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Ошибка подключения к базе данных")
+
+    data_to_update = request_data.dict(by_alias=True, exclude_none=True)
+
+    # add_time если присутствует в new_data, будет datetime.
+    # db_manager.update_pereval уже обрабатывает его преобразование в ISO.
+
+    state, message = db_manager.update_pereval(pereval_id, data_to_update)
+
+    if state == 1:
+        return {
+            "state": 1,
+            "message": message
+        }
+    else:
+        # Согласно заданию, возвращаем 200 OK, но с state=0 для ошибки
+        return {
+            "state": 0,
+            "message": message
+        }
+
+
+@app.get("/submitData/", summary="Получить все перевалы пользователя по Email")
+async def get_perevals_by_user_email(user__email: EmailStr):
+    """
+    Возвращает список всех объектов перевала, отправленных пользователем с указанным email,
+    а также их статусы.
+    """
+    if not db_manager.connect():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Ошибка подключения к базе данных")
+
+    perevals_list = db_manager.get_perevals_by_email(user__email)
+
+    if perevals_list is not None:
+        # Для каждого перевала в списке, изменим структуру, чтобы она выглядела
+        # ближе к исходному запросу (без images_json, а просто images)
+        formatted_list = []
+        for pereval_info in perevals_list:
+            response_data = pereval_info.copy()
+            if 'images_json' in response_data and isinstance(response_data['images_json'], dict):
+                response_data['images'] = response_data['images_json'].get('images', [])
+            else:
+                response_data['images'] = []
+            del response_data['images_json']
+            formatted_list.append(response_data)
+
+        return {
+            "status": status.HTTP_200_OK,
+            "message": "Успешно получено",
+            "data": formatted_list
+        }
+    else:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Ошибка при получении данных о перевалах.")
+
+
 # --- Запуск API (только для прямого запуска файла) ---
-# Это позволяет запускать API командой python main.py
 if __name__ == "__main__":
-    # Убедитесь, что переменные окружения установлены!
-    # Если вы их не настроили через конфигурацию запуска PyCharm,
-    # вы можете временно раскомментировать и установить их здесь,
-    # но помните, что это не рекомендуется для продакшена.
+    # Убедитесь, что переменные окружения установлены в конфигурации запуска PyCharm!
+    # ИЛИ временно раскомментируйте и установите их здесь (не рекомендуется для продакшена):
     # os.environ['FSTR_DB_HOST'] = 'localhost'
     # os.environ['FSTR_DB_PORT'] = '5432'
     # os.environ['FSTR_DB_NAME'] = 'pereval_app'
     # os.environ['FSTR_DB_LOGIN'] = 'postgres'
     # os.environ['FSTR_DB_PASS'] = 'admin123' # Замените на ваш реальный пароль!
 
-    # Запускаем Uvicorn
-    # host="0.0.0.0" позволяет принимать запросы со всех IP-адресов
-    # port=8000 - стандартный порт для FastAPI
-    # reload=True - перезагружает сервер при изменении кода (удобно для разработки)
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # Перед запуском Uvicorn, убедимся, что db_manager может подключиться хотя бы раз.
+    # Это полезно для быстрой диагностики проблем с БД при запуске API.
+    # Если подключение не удастся, Uvicorn не будет запущен.
+    if not db_manager.connect():
+        print("Критическая ошибка: Не удалось установить начальное соединение с базой данных. Проверьте настройки БД.")
+    else:
+        db_manager.disconnect()  # Закроем начальное соединение, Uvicorn откроет свои.
+        print("Начальная проверка подключения к БД успешна. Запускаю API...")
+        uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
