@@ -31,7 +31,7 @@ def db_session_manager():
     os.environ['FSTR_DB_PORT'] = '5432'
     os.environ['FSTR_DB_NAME'] = 'pereval_test_db'  # Отдельная тестовая БД!
     os.environ['FSTR_DB_LOGIN'] = 'postgres'
-    os.environ['FSTR_DB_PASS'] = '111'  # Ваш реальный пароль PostgreSQL (вы сказали, что это "111")
+    os.environ['FSTR_DB_PASS'] = '111'
 
     db_manager = DatabaseManager()
 

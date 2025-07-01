@@ -236,7 +236,7 @@ if __name__ == '__main__':
     os.environ['FSTR_DB_PORT'] = '5432'
     os.environ['FSTR_DB_NAME'] = 'pereval_app'
     os.environ['FSTR_DB_LOGIN'] = 'postgres'
-    os.environ['FSTR_DB_PASS'] = 'admin123'  # Замените на ваш реальный пароль!
+    os.environ['FSTR_DB_PASS'] = 'admin123'
 
     db_manager = DatabaseManager()
 

@@ -4,7 +4,7 @@ from typing import Optional, List, Union
 from datetime import datetime
 import uvicorn
 import os
-import json  # Добавлен импорт json
+import json
 
 from db_manager import DatabaseManager
 
@@ -18,7 +18,7 @@ app = FastAPI(
 db_manager = DatabaseManager()
 
 
-# --- Определяем модели данных для валидации входящих запросов ---
+# Определяем модели данных для валидации входящих запросов
 class User(BaseModel):
     email: EmailStr
     fam: str
@@ -57,10 +57,7 @@ class SubmitDataRequest(BaseModel):
     images: List[Image] = []  # По умолчанию пустой список изображений
 
 
-# НОВАЯ МОДЕЛЬ ДЛЯ PATCH-ЗАПРОСОВ
-# Все поля, которые могут быть обновлены, делаем Optional.
-# Поле user полностью удаляем или делаем Optional[User]
-# и явно обрабатываем его запрет в эндпоинте.
+# МОДЕЛЬ ДЛЯ PATCH-ЗАПРОСОВ
 class PatchDataRequest(BaseModel):
     beauty_title: Optional[str] = Field(None, alias="beautyTitle")
     title: Optional[str] = None
@@ -163,7 +160,7 @@ async def get_pereval_by_id(pereval_id: int):
 
 
 @app.patch("/submitData/{pereval_id}")
-async def patch_pereval(pereval_id: int, update_data: PatchDataRequest):  # ИСПОЛЬЗУЕМ НОВУЮ МОДЕЛЬ!
+async def patch_pereval(pereval_id: int, update_data: PatchDataRequest):
     """
     Редактирование данных о перевале по его ID.
     Разрешено редактировать только записи со статусом 'new'.
